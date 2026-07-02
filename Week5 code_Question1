@@ -1,0 +1,93 @@
+
+import rclpy
+from rclpy.node import Node
+from rclpy.action import ActionClient
+from nav2_msgs.action import FollowWaypoints
+from geometry_msgs.msg import PoseStamped
+import sys
+
+class Nav2Patroller(Node):
+    def __init__(self):
+        super().__init__('nav2_patroller')
+        
+        # Initialize the Action Client for FollowWaypoints
+        self._action_client = ActionClient(self, FollowWaypoints, 'follow_waypoints')
+        
+        self.get_logger().info("Waiting for Nav2 'FollowWaypoints' action server...")
+        self._action_client.wait_for_server()
+        self.get_logger().info("Action server found! Setting up patrol waypoints...")
+        
+        # Track the last seen waypoint index to handle clean transition logs
+        self.last_waypoint_index = -1
+        
+        # Start the patrol dispatch
+        self.send_route()
+
+    def send_route(self):
+        goal_msg = FollowWaypoints.Goal()
+        
+        # Hardcode 3 distinct waypoints (X, Y, and Orientation W)
+        # Note: Adjust these coordinates to match open spaces on your generated map!
+        waypoints_data = [
+            {'x': 1.2, 'y': 0.5, 'w': 1.0},   # Waypoint 1
+            {'x': 2.5, 'y': -1.0, 'w': 0.707}, # Waypoint 2
+            {'x': -1.5, 'y': 1.8, 'w': 1.0}   # Waypoint 3
+        ]
+        
+        poses = []
+        for data in waypoints_data:
+            pose = PoseStamped()
+            pose.header.frame_id = 'map'
+            pose.header.stamp = self.get_clock().now().to_msg()
+            pose.pose.position.x = data['x']
+            pose.pose.position.y = data['y']
+            pose.pose.orientation.w = data['w']
+            poses.append(pose)
+            
+        goal_msg.poses = poses
+        
+        # Initial output before the server feedback kicks in
+        print("\nNavigating to Waypoint 1...", flush=True)
+        self.last_waypoint_index = 0
+        
+        # Send goals asynchronously with a feedback callback
+        send_goal_future = self._action_client.send_goal_async(
+            goal_msg, 
+            feedback_callback=self.feedback_callback
+        )
+        send_goal_future.add_done_callback(self.goal_response_callback)
+
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error("Patrol goal rejected by Nav2 server.")
+            return
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.get_result_callback)
+
+    def feedback_callback(self, feedback_msg):
+        feedback = feedback_msg.feedback
+        current_idx = feedback.current_waypoint
+        
+        # When Nav2 switches to the next waypoint index, format the terminal output exactly as expected
+        if current_idx > self.last_waypoint_index:
+            print(f"Waypoint {self.last_waypoint_index + 1} Reached!", flush=True)
+            print(f"Navigating to Waypoint {current_idx + 1}...", flush=True)
+            self.last_waypoint_index = current_idx
+
+    def get_result_callback(self, future):
+        # Once the action finishes completely, the final waypoint is hit
+        print(f"Waypoint {self.last_waypoint_index + 1} Reached!", flush=True)
+        print("\nPatrol route successfully completed!", flush=True)
+        rclpy.shutdown()
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = Nav2Patroller()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info("Patrol node stopped manually.")
+
+if __name__ == '__main__':
+    main()
